@@ -1,2 +1,2 @@
 # X-Felector
-![Method](data/X-Feletctor.png)
+![Method](data/X-Felector.png)
