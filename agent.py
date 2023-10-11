@@ -2,6 +2,7 @@ import torch
 import random
 import torch.nn as nn 
 import numpy as np
+import pandas as pd
 
 from collections import deque
 from backtester import BackTester
@@ -10,10 +11,12 @@ from torch.optim import SGD
 from torch.nn import MSELoss
 from network import Mask
 from network import Rnet
+from network import Qnet
+from network import Policy
 
 torch.set_printoptions(sci_mode=False)
 
-device = 'cuda'
+device = 'cpu'
 
 class RLSEARCH(BackTester):
     def __init__(self, config):
@@ -22,14 +25,30 @@ class RLSEARCH(BackTester):
         dim = config['Dim']
         self.mnet = Mask(dim).to(device)
         self.rnet = Rnet(dim).to(device)
+        self.qnet = Qnet(dim).to(device)
+        self.policy = Policy(dim).to(device)
         self.mse = MSELoss()
 
         self.opt_r = Adam(self.rnet.parameters(), lr=1e-4)
         self.opt_a = Adam(self.mnet.parameters(), lr=2e-3)
+        self.opt_q = Adam(self.qnet.parameters(), lr=1e-4)
+        self.opt_p = Adam(self.policy.parameters(), lr=5e-3)
+        self.states = None
     
-    def save(self, path):
-        torch.save(self.mnet.state_dict(), path)
-        torch.save(self.rnet.state_dict(), path)
+    def save(self):
+        torch.save(self.mnet.state_dict(), 'mnet.pth')
+        torch.save(self.rnet.state_dict(), 'rnet.pth')
+        torch.save(self.qnet.state_dict(), 'qnet.pth')
+        torch.save(self.policy.state_dict(), 'policy.pth')
+
+    def get_s(self):
+        """
+        State로 사용할 데이터 올려놓기
+        """
+        if self.states is None:
+            self.states = [self.get_ScoreEACH(date) \
+                        for date in self.universe.index]
+            self.states = torch.tensor(np.array(self.states))
 
     def get_w(self, noise=True):
         """
@@ -44,13 +63,53 @@ class RLSEARCH(BackTester):
         reward = result['sharpe']
         reward = torch.tensor([reward])
         return reward
+
+    def get_R(self, rewards:list):
+        """
+        순차적으로 받은 reward로 return 계산
+        """
+        returns = []
+        state_return = 0
+
+        for reward in reversed(rewards):
+            state_return = reward + 0.95*state_return
+            returns.append(state_return)
+
+        returns = returns[::-1]
+        returns = torch.tensor(returns)
+        returns = torch.unsqueeze(returns, -1)
+        return returns
+    
+    def binning(self, df):
+        mapping = self.policy(torch.tensor(df.to_numpy()).unsqueeze(0))
+        mapping = torch.squeeze(mapping, 0).detach()
+        mapping = pd.DataFrame(mapping.numpy(), index=df.index)
+        return mapping
         
-    def update(self, w, r):
+    def update(self, w, r, noise, rewards):
         """
         DDPG 스타일 업데이트
         """
-        self.lam = 0.0
-        alpha = 0.6219
+        n = noise.detach()
+        s = self.states
+        action = self.policy(s)
+        action = (action * n).float()
+        action = torch.sum(action, axis=-1, keepdim=True)
+
+        # Q network update
+        R = self.get_R(rewards).float()
+        q_hat = self.qnet(s.float(), action.detach())
+        q_loss = self.mse(q_hat, R)
+        
+        self.opt_q.zero_grad()
+        q_loss.backward()
+        self.opt_q.step()
+
+        # Policy update
+        p_loss = -(self.qnet(s.float(), action)).mean()
+        self.opt_p.zero_grad()
+        p_loss.backward()
+        self.opt_p.step()
 
         # R network update
         r_hat = self.rnet(w.detach())
@@ -61,16 +120,11 @@ class RLSEARCH(BackTester):
         self.opt_r.step()
 
         # Policy update
-        reg = self.mnet.cost(w)
-        w_loss = -(self.rnet(w) - 0.0*reg).mean()
+        w_loss = -(self.rnet(w)).mean()
 
         self.opt_a.zero_grad()
         w_loss.backward(retain_graph=True)
         self.opt_a.step()
-
-        # Lambda update
-        lam_grad = -(reg - alpha).mean()
-        self.lam -= 1e-2 * lam_grad
         return r_loss.item(), w_loss.item()
         
     def search(self, iter, start='1990', end='2024'):
@@ -85,9 +139,13 @@ class RLSEARCH(BackTester):
 
         for i in range(iter):
             weight = self.get_w()
-            self.init(weight.detach().numpy())
-            result = self.test(start, end)[-1]
+
+            self.init(weight.detach().numpy(), 
+                      start, end, self.binning)
+            
+            rewards, result = self.test()[-2:]
             reward = self.get_r(result)
+            self.get_s()        
 
             score += 0.01 * (reward.item() - score)
             w_tensor.append(weight)
@@ -100,16 +158,16 @@ class RLSEARCH(BackTester):
                 w_batch = torch.stack(w_batch).float().to(device)
                 r_batch = torch.stack(r_batch).float().to(device)
                 
-                r_loss, w_loss = self.update(w_batch, r_batch)
+                r_loss, w_loss = self.update(w_batch, r_batch, weight, rewards)
 
                 print(f'iter:{i}')
                 print(f'reward:{reward.item()}')
                 print(f'score:{score}')
                 print(f'reward:{reward}')
-                print(f'lambda:{self.lam}')
                 print(f'sigma:{self.mnet.sigma}')
                 print(f'r loss:{r_loss}')
                 print(f'w loss:{w_loss}')
+                print(f'points:{self.policy.state_dict()}')
                 print(f'{weight.detach()}')
                 print(f'{self.get_w(False).detach()}\n')
 
@@ -140,8 +198,8 @@ class RANDOMSEARCH(BackTester):
 
         for i in range(iter):
             weight = self.get_w()
-            self.init(weight)
-            result = self.test(start, end)[-1] 
+            self.init(weight, start, end)
+            result = self.test()[-1] 
             reward = result['sharpe'] 
 
             self.optimal = weight \

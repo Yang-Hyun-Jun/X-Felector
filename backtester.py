@@ -16,7 +16,8 @@ class BackTester(Metrics, FactorManager):
         self.config = config
         self.set_w()
 
-    def init(self, w:np.array=None):
+    def init(self, w:np.array=None, 
+             start='1990', end='2024', binning=False):
         """
         백테스트에 필요한 랭킹 테이블 로드
         FactorWeight: 각 팩터 스코어의 가중치
@@ -25,10 +26,11 @@ class BackTester(Metrics, FactorManager):
         FactorWeight = [0.12, 0.23, ..., 0.05]
         """
         self.set_w(w)
-        self.rank_all = self.get_RankALL()
-        self.universe = self.price
+        self.rank_all = self.get_RankALL(binning)
+        self.rank_all = self.rank_all[start:end]
+        self.universe = self.price[start:end]
         
-    def act(self, index:int, n:int, q=int) -> np.array:
+    def act(self, index:int, n:int, q:int) -> np.array:
         """
         특정 타임스텝에서 팩터 랭킹에 따른, 티커 리스트와 가중 벡터 리턴
 
@@ -47,7 +49,7 @@ class BackTester(Metrics, FactorManager):
         return ticker, weight 
 
 
-    def test(self, start='1990', end='2024'):
+    def test(self):
         """ 
         [Return list]
         1. PVs: 타임스텝별 포트폴리오 벨류
@@ -60,9 +62,7 @@ class BackTester(Metrics, FactorManager):
         PFs = []
         POs = []
         TIs = []
-
-        self.universe = self.universe[start:end]
-        self.rank_all = self.rank_all[start:end]
+        Rewards = []
 
         universe = self.universe
         rank_all = self.rank_all
@@ -108,6 +108,7 @@ class BackTester(Metrics, FactorManager):
             profitloss = np.dot(ratio, p_old.weight)
             portfolio_value *= (1 + profitloss)
             cum_profit = ((portfolio_value / init_balance -1) * 100)
+            Rewards.append(profitloss)
 
             weight_now = p_old.weight * (1+ratio) 
             weight_now = weight_now / np.sum(weight_now)
@@ -204,7 +205,7 @@ class BackTester(Metrics, FactorManager):
 
         Result = {'sharpe': SR, 'rankic': IC, 'mdd': MDD}
         
-        return PVs, PFs, TIs, POs, Result    
+        return PVs, PFs, TIs, POs, Rewards, Result    
         
         
 

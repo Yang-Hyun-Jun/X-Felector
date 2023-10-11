@@ -39,8 +39,8 @@ if __name__ == '__main__':
 
         optimal = RLsearch.get_w(False)
         optimal = optimal.detach().numpy()
-        RLsearch.init(optimal)
-        PVs, PFs, TIs, POs, result = RLsearch.test('2015')
+        RLsearch.init(optimal, '2015')
+        PVs, PFs, TIs, POs, result = RLsearch.test()
 
 
     if args.algorithm == 'random':
@@ -48,8 +48,8 @@ if __name__ == '__main__':
         randomsearch.search(30000, '2009', '2015')
 
         optimal = randomsearch.optimal
-        randomsearch.init(optimal)
-        PVs, PFs, TIs, POs, result = randomsearch.test('2015')
+        randomsearch.init(optimal, '2015')
+        PVs, PFs, TIs, POs, result = randomsearch.test()
 
 
     seed = args.seed

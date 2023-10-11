@@ -74,12 +74,10 @@ class FactorManager:
         values = values.pivot(index='종목코드', columns='팩터', values='값')
 
         factor_score = values[self.factors]
-        factor_score = factor_score.apply(self.rankin_func)
         factor_score = factor_score.apply(self.minmax_func)
-        factor_score = factor_score.apply(self.weight_func)
         return factor_score
     
-    def get_RankALL(self):
+    def get_RankALL(self, binning=False):
         """
         멀티팩터 또는 싱글팩터 점수를 합하여 토탈 랭킹 데이터 리턴
 
@@ -102,6 +100,7 @@ class FactorManager:
         func2 = lambda df:df.sum(axis=1).rank(method='first', ascending=False)
 
         rank_all = map(func1, self.scores_by_date)
+        rank_all = map(binning, rank_all) if binning else rank_all
         rank_all = map(func2, rank_all)
         rank_all = pd.concat(rank_all, axis=1).transpose()
         rank_all.index = dates
